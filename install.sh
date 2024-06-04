@@ -3,7 +3,7 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 else
     dnf update && dnf upgrade -y
-    dnf install curl nano coreutils
+    dnf install -y curl nano coreutils tar 
 
     sudo firewall-cmd --zone=public --add-port=1515/tcp --permanent
     sudo firewall-cmd --zone=public --add-port=1514/tcp --permanent
