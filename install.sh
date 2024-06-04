@@ -2,77 +2,75 @@ if [[ $EUID -ne 0 ]]; then
    echo "This script must be run as root"
    exit 1
 else
-    dnf -y install vim curl unzip wget libcap wget
+    dnf update && dnf upgrade -y
+    dnf install curl nano coreutils
+
+    curl -sO https://packages.wazuh.com/4.7/wazuh-certs-tool.sh
+    curl -sO https://packages.wazuh.com/4.7/config.yml
+    bash ./wazuh-certs-tool.sh -A
+    tar -cvf ./wazuh-certificates.tar -C ./wazuh-certificates/ .
+    rm -rf ./wazuh-certificates
     rpm --import https://packages.wazuh.com/key/GPG-KEY-WAZUH
+    echo -e '[wazuh]\ngpgcheck=1\ngpgkey=https://packages.wazuh.com/key/GPG-KEY-WAZUH\nenabled=1\nname=EL-$releasever - Wazuh\nbaseurl=https://packages.wazuh.com/4.x/yum/\nprotect=1' | tee /etc/yum.repos.d/wazuh.repo
 
-    wazuh_repo="\
-[wazuh]
-gpgcheck=1
-gpgkey=https://packages.wazuh.com/key/GPG-KEY-WAZUH
-enabled=1
-name=EL-Wazuh
-baseurl=https://packages.wazuh.com/4.x/yum/
-protect=1
-    "
-    echo "$wazuh_repo" | sudo tee /etc/yum.repos.d/wazuh.repo >/dev/null
-
-    dnf -y install wazuh-manager-4.3.10
-    systemctl start wazuh-manager
-    systemctl enable wazuh-manager
-
-    dnf -y install opendistroforelasticsearch
-    wget https://packages.wazuh.com/resources/4.2/open-distro/elasticsearch/7.x/elasticsearch_all_in_one.yml
-    mv elasticsearch_all_in_one.yml /etc/elasticsearch/elasticsearch.yml
-
-    for i in roles.yml roles_mapping.yml internal_users.yml; do
-    wget https://packages.wazuh.com/resources/4.2/open-distro/elasticsearch/roles/$i
-    sudo mv $i /usr/share/elasticsearch/plugins/opendistro_security/securityconfig/
-    done
-
-    rm -f /etc/elasticsearch/{esnode-key.pem,esnode.pem,kirk-key.pem,kirk.pem,root-ca.pem}
-    curl -so ~/wazuh-cert-tool.sh https://packages.wazuh.com/resources/4.2/open-distro/tools/certificate-utility/wazuh-cert-tool.sh
-    curl -so ~/instances.yml https://packages.wazuh.com/resources/4.2/open-distro/tools/certificate-utility/instances_aio.yml
-    bash ~/wazuh-cert-tool.sh
-    mkdir /etc/elasticsearch/certs/
-    mv ~/certs/elasticsearch* /etc/elasticsearch/certs/
-    mv ~/certs/admin* /etc/elasticsearch/certs/
-    cp ~/certs/root-ca* /etc/elasticsearch/certs/
-    echo "export JAVA_HOME=/usr/share/elasticsearch/jdk/ && /usr/share/elasticsearch/plugins/opendistro_security/tools/securityadmin.sh -cd /usr/share/elasticsearch/plugins/opendistro_security/securityconfig/ -nhnv -cacert /etc/elasticsearch/certs/root-ca.pem -cert /etc/elasticsearch/certs/admin.pem -key /etc/elasticsearch/certs/admin-key.pem" >> /etc/profile
-    mkdir -p /etc/elasticsearch/jvm.options.d
-    echo '-Dlog4j2.formatMsgNoLookups=true' > /etc/elasticsearch/jvm.options.d/disabledlog4j.options
-    chmod 2750 /etc/elasticsearch/jvm.options.d/disabledlog4j.options
-    chown root:elasticsearch /etc/elasticsearch/jvm.options.d/disabledlog4j.options
-    systemctl enable --now elasticsearch
-    source /etc/profile
-
-    dnf -y install opendistroforelasticsearch-kibana
-    wget https://packages.wazuh.com/resources/4.2/open-distro/kibana/7.x/kibana_all_in_one.yml
-    mv kibana_all_in_one.yml /etc/kibana/kibana.yml
-    sudo mkdir /usr/share/kibana/data
-    sudo chown -R kibana:kibana /usr/share/kibana/data
-    cd /usr/share/kibana/
-    sudo -u kibana /usr/share/kibana/bin/kibana-plugin install https://packages.wazuh.com/4.x/ui/kibana/wazuh_kibana-4.3.10_7.10.2-1.zip
-    mkdir /etc/kibana/certs
-    cp ~/certs/root-ca.pem /etc/kibana/certs/
-    mv ~/certs/kibana* /etc/kibana/certs/
-    chown kibana:kibana /etc/kibana/certs/*
-    setcap 'cap_net_bind_service=+ep' /usr/share/kibana/node/bin/node
+    echo "***installing wazuh-indexer***"
+    yum -y install wazuh-indexer
+    NODE_NAME=node-1
+    mkdir /etc/wazuh-indexer/certs
+    tar -xf ./wazuh-certificates.tar -C /etc/wazuh-indexer/certs/ ./$NODE_NAME.pem ./$NODE_NAME-key.pem ./admin.pem ./admin-key.pem ./root-ca.pem
+    mv -n /etc/wazuh-indexer/certs/$NODE_NAME.pem /etc/wazuh-indexer/certs/indexer.pem
+    mv -n /etc/wazuh-indexer/certs/$NODE_NAME-key.pem /etc/wazuh-indexer/certs/indexer-key.pem
+    chmod 500 /etc/wazuh-indexer/certs
+    chmod 400 /etc/wazuh-indexer/certs/*
+    chown -R wazuh-indexer:wazuh-indexer /etc/wazuh-indexer/certs
     systemctl daemon-reload
-    systemctl enable --now kibana
+    systemctl enable wazuh-indexer
+    echo "starting wazuh-indexer"
+    systemctl start wazuh-indexer
+    /usr/share/wazuh-indexer/bin/indexer-security-init.sh
+    
 
-    sudo firewall-cmd --add-port=443/tcp --permanent
-    sudo firewall-cmd --reload
+    echo "***installing wazuh-server***"
+    yum -y install wazuh-manager
+    systemctl daemon-reload
+    systemctl enable wazuh-manager
+    echo "starting wazuh-manager"
+    systemctl start wazuh-manager
 
-    dnf install filebeat -y
-    wget https://packages.wazuh.com/resources/4.2/open-distro/filebeat/7.x/filebeat_all_in_one.yml
-    sudo mv filebeat_all_in_one.yml /etc/filebeat/filebeat.yml
+    yum -y install filebeat
+    curl -so /etc/filebeat/filebeat.yml https://packages.wazuh.com/4.7/tpl/wazuh/filebeat/filebeat.yml
+    filebeat keystore create
+    echo admin | filebeat keystore add username --stdin --force
+    echo admin | filebeat keystore add password --stdin --force
     curl -so /etc/filebeat/wazuh-template.json https://raw.githubusercontent.com/wazuh/wazuh/v4.7.5/extensions/elasticsearch/7.x/wazuh-template.json
-    sudo chmod go+r /etc/filebeat/wazuh-template.json
-    curl -s https://packages.wazuh.com/4.x/filebeat/wazuh-filebeat-0.2.tar.gz | sudo tar -xvz -C /usr/share/filebeat/module
-    sudo mkdir /etc/filebeat/certs
-    sudo cp ~/certs/root-ca.pem /etc/filebeat/certs/
-    sudo mv ~/certs/filebeat* /etc/filebeat/certs/
+    chmod go+r /etc/filebeat/wazuh-template.json
+    curl -s https://packages.wazuh.com/4.x/filebeat/wazuh-filebeat-0.3.tar.gz | tar -xvz -C /usr/share/filebeat/module
+    NODE_NAME=node-1
+    mkdir /etc/filebeat/certs
+    tar -xf ./wazuh-certificates.tar -C /etc/filebeat/certs/ ./$NODE_NAME.pem ./$NODE_NAME-key.pem ./root-ca.pem
+    mv -n /etc/filebeat/certs/$NODE_NAME.pem /etc/filebeat/certs/filebeat.pem
+    mv -n /etc/filebeat/certs/$NODE_NAME-key.pem /etc/filebeat/certs/filebeat-key.pem
+    chmod 500 /etc/filebeat/certs
+    chmod 400 /etc/filebeat/certs/*
+    chown -R root:root /etc/filebeat/certs
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now filebeat
+    systemctl daemon-reload
+    systemctl enable filebeat
+    echo "starting filebeat"
+    systemctl start filebeat
+
+    yum install libcap
+    yum -y install wazuh-dashboard
+    NODE_NAME=node-1
+    mkdir /etc/wazuh-dashboard/certs
+    tar -xf ./wazuh-certificates.tar -C /etc/wazuh-dashboard/certs/ ./$NODE_NAME.pem ./$NODE_NAME-key.pem ./root-ca.pem
+    mv -n /etc/wazuh-dashboard/certs/$NODE_NAME.pem /etc/wazuh-dashboard/certs/dashboard.pem
+    mv -n /etc/wazuh-dashboard/certs/$NODE_NAME-key.pem /etc/wazuh-dashboard/certs/dashboard-key.pem
+    chmod 500 /etc/wazuh-dashboard/certs
+    chmod 400 /etc/wazuh-dashboard/certs/*
+    chown -R wazuh-dashboard:wazuh-dashboard /etc/wazuh-dashboard/certs
+
+    systemctl daemon-reload
+    systemctl enable wazuh-dashboard
+    systemctl start wazuh-dashboard
 fi
