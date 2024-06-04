@@ -5,8 +5,19 @@ else
     dnf update && dnf upgrade -y
     dnf install curl nano coreutils
 
+    sudo firewall-cmd --zone=public --add-port=1515/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=1514/tcp --permanent
+    sudo firewall-cmd --zone=public --add-port=443/tcp --permanent
+    sudo firewall-cmd --reload
+
     curl -sO https://packages.wazuh.com/4.7/wazuh-certs-tool.sh
     curl -sO https://packages.wazuh.com/4.7/config.yml
+    indexer_ip=$(ip a | awk '/ens160/ && /inet/ {split($2, ip, "/"); print ip[1]}')
+    manager_ip=$(ip a | awk '/ens160/ && /inet/ {split($2, ip, "/"); print ip[1]}')
+    dashboard_ip=$(ip a | awk '/ens160/ && /inet/ {split($2, ip, "/"); print ip[1]}')
+    awk -v indexer_ip="$indexer_ip" -v manager_ip="$manager_ip" -v dashboard_ip="$dashboard_ip" '{gsub(/<indexer-node-ip>/, indexer_ip); gsub(/<wazuh-manager-ip>/, manager_ip); gsub(/<dashboard-node-ip>/, dashboard_ip)}1' config.yml > config_tmp.yml
+    mv config_tmp.yml config.yml
+    echo "IP addresses replaced successfully."
     bash ./wazuh-certs-tool.sh -A
     tar -cvf ./wazuh-certificates.tar -C ./wazuh-certificates/ .
     rm -rf ./wazuh-certificates
